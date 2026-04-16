@@ -40,15 +40,19 @@ void LoadImageList(const string &path, vector<string> &filenames,
 
 int main(int argc, char **argv)
 {
-    if (argc < 4 || argc > 6)
+    if (argc < 4 || argc > 7)
     {
         cerr << "\nUsage: ./mono_localize  vocab  settings  image_list"
-                "  [repeat=5]  [viewer=0]\n";
+                "  [repeat=5]  [viewer=0]  [fps=30]\n"
+                "  fps controls the real-time pacing between repeats.\n"
+                "  Lower fps = longer sleep = more wall time per image.\n";
         return 1;
     }
 
     int    nRepeat    = (argc >= 5) ? stoi(argv[4]) : 5;
     bool   bUseViewer = !(argc >= 6 && string(argv[5]) == "0");
+    double fps        = (argc >= 7) ? stod(argv[6]) : 30.0;
+    if (fps <= 0) fps = 30.0;
 
     // ── load image list ───────────────────────────────────────────────────
     vector<string> vFilenames;
@@ -73,7 +77,7 @@ int main(int argc, char **argv)
 
     // ── main loop ─────────────────────────────────────────────────────────
     int nImages = (int)vFilenames.size();
-    double fakeInterval = 1.0 / 30.0;
+    double fakeInterval = 1.0 / fps;
 
     // Store per-image result: (timestamp, path, Twc, localized)
     struct Result { double ts; string path; Sophus::SE3f Twc; bool ok; };

@@ -126,6 +126,11 @@ public:
     // This resumes local mapping thread and performs SLAM again.
     void DeactivateLocalizationMode();
 
+    // Force tracking state to RECENTLY_LOST so the next frame triggers
+    // relocalization instead of monocular initialization.
+    // Call after ActivateLocalizationMode() when loading an existing atlas.
+    void ForceRelocalize();
+
     // Returns true if there have been a big map change (loop closure, global BA)
     // since last call to this function
     bool MapChanged();
