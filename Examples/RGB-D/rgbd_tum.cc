@@ -32,11 +32,17 @@ void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageF
 
 int main(int argc, char **argv)
 {
-    if(argc != 5)
+    if(argc < 5 || argc > 7)
     {
-        cerr << endl << "Usage: ./rgbd_tum path_to_vocabulary path_to_settings path_to_sequence path_to_association" << endl;
+        cerr << endl << "Usage: ./rgbd_tum path_to_vocabulary path_to_settings path_to_sequence path_to_association [viewer:0|1] [localize]" << endl;
         return 1;
     }
+
+    // argv[5] optional: 0 = headless, 1 (default) = Pangolin viewer
+    bool bUseViewer = !(argc >= 6 && string(argv[5]) == "0");
+
+    // argv[6] optional: "localize" = load map and track only (no new map points)
+    bool bLocalizationOnly = (argc == 7 && string(argv[6]) == "localize");
 
     // Retrieve paths to images
     vector<string> vstrImageFilenamesRGB;
@@ -59,8 +65,15 @@ int main(int argc, char **argv)
     }
 
     // Create SLAM system. It initializes all system threads and gets ready to process frames.
-    ORB_SLAM3::System SLAM(argv[1],argv[2],ORB_SLAM3::System::RGBD,true);
+    ORB_SLAM3::System SLAM(argv[1],argv[2],ORB_SLAM3::System::RGBD,bUseViewer);
     float imageScale = SLAM.GetImageScale();
+
+    // Localization-only mode: track against loaded map, do not extend it
+    if(bLocalizationOnly)
+    {
+        cout << "Localization mode: tracking against loaded map only." << endl;
+        SLAM.ActivateLocalizationMode();
+    }
 
     // Vector for tracking time statistics
     vector<float> vTimesTrack;
@@ -74,9 +87,12 @@ int main(int argc, char **argv)
     cv::Mat imRGB, imD;
     for(int ni=0; ni<nImages; ni++)
     {
+        // Wall-clock start of this iteration (imread + tracking + sleep all count)
+        std::chrono::steady_clock::time_point t_iter_start = std::chrono::steady_clock::now();
+
         // Read image and depthmap from file
-        imRGB = cv::imread(string(argv[3])+"/"+vstrImageFilenamesRGB[ni],cv::IMREAD_UNCHANGED); //,cv::IMREAD_UNCHANGED);
-        imD = cv::imread(string(argv[3])+"/"+vstrImageFilenamesD[ni],cv::IMREAD_UNCHANGED); //,cv::IMREAD_UNCHANGED);
+        imRGB = cv::imread(string(argv[3])+"/"+vstrImageFilenamesRGB[ni],cv::IMREAD_UNCHANGED);
+        imD = cv::imread(string(argv[3])+"/"+vstrImageFilenamesD[ni],cv::IMREAD_UNCHANGED);
         double tframe = vTimestamps[ni];
 
         if(imRGB.empty())
@@ -97,7 +113,7 @@ int main(int argc, char **argv)
 #ifdef COMPILEDWITHC11
         std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
 #else
-        std::chrono::monotonic_clock::time_point t1 = std::chrono::monotonic_clock::now();
+        std::chrono::monotonic_clock::time_point t1 = std::chrono::steady_clock::now();
 #endif
 
         // Pass the image to the SLAM system
@@ -106,22 +122,28 @@ int main(int argc, char **argv)
 #ifdef COMPILEDWITHC11
         std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
 #else
-        std::chrono::monotonic_clock::time_point t2 = std::chrono::monotonic_clock::now();
+        std::chrono::monotonic_clock::time_point t2 = std::chrono::steady_clock::now();
 #endif
 
         double ttrack= std::chrono::duration_cast<std::chrono::duration<double> >(t2 - t1).count();
-
         vTimesTrack[ni]=ttrack;
 
-        // Wait to load the next frame
+        // Target inter-frame interval from timestamps
         double T=0;
         if(ni<nImages-1)
             T = vTimestamps[ni+1]-tframe;
         else if(ni>0)
             T = tframe-vTimestamps[ni-1];
 
-        if(ttrack<T)
-            usleep((T-ttrack)*1e6);
+        // Enforce wall-clock floor: sleep until the full interval T has elapsed
+        // since t_iter_start (covers imread + tracking, not just tracking).
+        // This prevents frames from being fed faster than the target rate even
+        // when tracking itself is fast, giving local-mapping and loop-closing
+        // threads enough breathing room.
+        double t_elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(
+            std::chrono::steady_clock::now() - t_iter_start).count();
+        if(t_elapsed < T)
+            usleep((T - t_elapsed)*1e6);
     }
 
     // Stop all threads
