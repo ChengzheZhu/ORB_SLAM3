@@ -170,6 +170,21 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 
         mpAtlas->CreateNewMap();
 
+        // After CreateNewMap(), the loaded map is stored and an empty map is
+        // current.  For pure relocalization we need the loaded map to be current
+        // so that DetectRelocalizationCandidates() can find its KFs.
+        {
+            Map* pEmptyNew = mpAtlas->GetCurrentMap();
+            for (Map* pM : mpAtlas->GetAllMaps())
+            {
+                if (pM != pEmptyNew && !pM->GetAllKeyFrames().empty())
+                {
+                    mpAtlas->ChangeMap(pM);
+                    break;
+                }
+            }
+        }
+
         //clock_t timeElapsed = clock() - start;
         //unsigned msElapsed = timeElapsed / (CLOCKS_PER_SEC / 1000);
         //cout << "Binary file read in " << msElapsed << " ms" << endl;
@@ -485,6 +500,13 @@ void System::DeactivateLocalizationMode()
 {
     unique_lock<mutex> lock(mMutexMode);
     mbDeactivateLocalizationMode = true;
+}
+
+void System::ForceRelocalize()
+{
+    // Skip monocular initialization and jump straight to relocalization.
+    // Safe to call after ActivateLocalizationMode() when an atlas is loaded.
+    mpTracker->mState = Tracking::RECENTLY_LOST;
 }
 
 bool System::MapChanged()
@@ -1445,9 +1467,7 @@ bool System::LoadAtlas(int type)
     string strFileVoc, strVocChecksum;
     bool isRead = false;
 
-    string pathLoadFileName = "./";
-    pathLoadFileName = pathLoadFileName.append(mStrLoadAtlasFromFile);
-    pathLoadFileName = pathLoadFileName.append(".osa");
+    string pathLoadFileName = mStrLoadAtlasFromFile + ".osa";
 
     if(type == TEXT_FILE) // File text
     {

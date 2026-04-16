@@ -1898,7 +1898,17 @@ void Tracking::Track()
 
     if(mState==NOT_INITIALIZED)
     {
-        if(mSensor==System::STEREO || mSensor==System::RGBD || mSensor==System::IMU_STEREO || mSensor==System::IMU_RGBD)
+        // If an atlas with keyframes is already loaded, skip initialization
+        // and jump straight to relocalization (avoids needing parallax for
+        // monocular cameras when localizing against a pre-built map).
+        Map* pMap = mpAtlas->GetCurrentMap();
+        if(pMap && !pMap->GetAllKeyFrames().empty())
+        {
+            cerr << "[init-skip] Atlas map has " << pMap->GetAllKeyFrames().size()
+                 << " KFs — skipping mono init, going to relocalize\n";
+            mState = RECENTLY_LOST;
+        }
+        else if(mSensor==System::STEREO || mSensor==System::RGBD || mSensor==System::IMU_STEREO || mSensor==System::IMU_RGBD)
         {
             StereoInitialization();
         }
@@ -2036,7 +2046,7 @@ void Tracking::Track()
         else
         {
             // Localization Mode: Local Mapping is deactivated (TODO Not available in inertial mode)
-            if(mState==LOST)
+            if(mState==LOST || mState==RECENTLY_LOST)
             {
                 if(mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
                     Verbose::PrintMess("IMU. State LOST", Verbose::VERBOSITY_NORMAL);
@@ -3614,7 +3624,10 @@ bool Tracking::Relocalization()
 
     // Relocalization is performed when tracking is lost
     // Track Lost: Query KeyFrame Database for keyframe candidates for relocalisation
-    vector<KeyFrame*> vpCandidateKFs = mpKeyFrameDB->DetectRelocalizationCandidates(&mCurrentFrame, mpAtlas->GetCurrentMap());
+    Map* pCurrentMap = mpAtlas->GetCurrentMap();
+    cerr << "[reloc] map KFs: " << (pCurrentMap ? pCurrentMap->GetAllKeyFrames().size() : 0) << "\n";
+    vector<KeyFrame*> vpCandidateKFs = mpKeyFrameDB->DetectRelocalizationCandidates(&mCurrentFrame, pCurrentMap);
+    cerr << "[reloc] candidates: " << vpCandidateKFs.size() << "\n";
 
     if(vpCandidateKFs.empty()) {
         Verbose::PrintMess("There are not candidates", Verbose::VERBOSITY_NORMAL);
@@ -3646,7 +3659,7 @@ bool Tracking::Relocalization()
         else
         {
             int nmatches = matcher.SearchByBoW(pKF,mCurrentFrame,vvpMapPointMatches[i]);
-            if(nmatches<15)
+            if(nmatches<10)
             {
                 vbDiscarded[i] = true;
                 continue;
@@ -3721,17 +3734,17 @@ bool Tracking::Relocalization()
                         mCurrentFrame.mvpMapPoints[io]=static_cast<MapPoint*>(NULL);
 
                 // If few inliers, search by projection in a coarse window and optimize again
-                if(nGood<50)
+                if(nGood<30)
                 {
                     int nadditional =matcher2.SearchByProjection(mCurrentFrame,vpCandidateKFs[i],sFound,10,100);
 
-                    if(nadditional+nGood>=50)
+                    if(nadditional+nGood>=30)
                     {
                         nGood = Optimizer::PoseOptimization(&mCurrentFrame);
 
                         // If many inliers but still not enough, search by projection again in a narrower window
                         // the camera has been already optimized with many points
-                        if(nGood>30 && nGood<50)
+                        if(nGood>20 && nGood<30)
                         {
                             sFound.clear();
                             for(int ip =0; ip<mCurrentFrame.N; ip++)
@@ -3740,7 +3753,7 @@ bool Tracking::Relocalization()
                             nadditional =matcher2.SearchByProjection(mCurrentFrame,vpCandidateKFs[i],sFound,3,64);
 
                             // Final optimization
-                            if(nGood+nadditional>=50)
+                            if(nGood+nadditional>=30)
                             {
                                 nGood = Optimizer::PoseOptimization(&mCurrentFrame);
 
@@ -3754,7 +3767,7 @@ bool Tracking::Relocalization()
 
 
                 // If the pose is supported by enough inliers stop ransacs and continue
-                if(nGood>=50)
+                if(nGood>=30)
                 {
                     bMatch = true;
                     break;

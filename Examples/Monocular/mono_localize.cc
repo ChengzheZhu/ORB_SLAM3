@@ -18,8 +18,9 @@
  *   Lines starting with # are ignored.
  *
  * Output (written to CWD):
- *   CameraTrajectory.txt   — TUM-format per-frame pose for localized frames
- *   KeyFrameTrajectory.txt — TUM-format keyframe poses
+ *   LocalizedPoses.txt     — per-image Twc pose for successfully localized frames
+ *                            format: timestamp image_path tx ty tz qx qy qz qw
+ *   KeyFrameTrajectory.txt — TUM-format keyframe poses (original map KFs)
  */
 
 #include <iostream>
@@ -63,18 +64,24 @@ int main(int argc, char **argv)
          << "  (each repeated " << nRepeat << "x)\n";
 
     // ── create SLAM system ────────────────────────────────────────────────
-    // Atlas is loaded via System.LoadAtlasFromFile key in the YAML config.
     ORB_SLAM3::System SLAM(argv[1], argv[2],
                            ORB_SLAM3::System::MONOCULAR, bUseViewer);
     float imageScale = SLAM.GetImageScale();
 
-    // Localization-only: do not extend the map
     cout << "Activating localization mode (map is read-only).\n";
     SLAM.ActivateLocalizationMode();
 
     // ── main loop ─────────────────────────────────────────────────────────
     int nImages = (int)vFilenames.size();
-    double fakeInterval = 1.0 / 30.0;   // 30 fps simulated between repeats
+    double fakeInterval = 1.0 / 30.0;
+
+    // Store per-image result: (timestamp, path, Twc, localized)
+    struct Result { double ts; string path; Sophus::SE3f Twc; bool ok; };
+    vector<Result> vResults;
+
+    // tCurrent strictly increases across ALL repeats of ALL images.
+    // Seed it from the first image's timestamp so we stay above atlas KF range.
+    double tCurrent = vTimestamps.empty() ? 0.0 : vTimestamps[0];
 
     for (int ni = 0; ni < nImages; ni++)
     {
@@ -85,6 +92,10 @@ int main(int argc, char **argv)
         if (im_orig.empty())
         {
             cerr << "  WARNING: failed to read image, skipping.\n";
+            // Advance tCurrent past this image's slot
+            tCurrent += nRepeat * fakeInterval;
+            vResults.push_back({vTimestamps[ni], vFilenames[ni],
+                                Sophus::SE3f(), false});
             continue;
         }
 
@@ -95,19 +106,28 @@ int main(int argc, char **argv)
             cv::resize(im_orig, im_orig, cv::Size(w, h));
         }
 
-        // Feed the same image nRepeat times with incrementing timestamps.
-        // This gives the relocalization thread multiple shots without motion.
-        double t_base = vTimestamps[ni];
+        // Feed the same image nRepeat times with strictly increasing timestamps.
+        // Capture the pose from the last successful (state==OK) repeat.
+        Sophus::SE3f Tcw;
+        bool localized = false;
+
         for (int r = 0; r < nRepeat; r++)
         {
-            double tframe = t_base + r * fakeInterval;
+            double tframe = tCurrent;
+            tCurrent += fakeInterval;
 
 #ifdef COMPILEDWITHC11
             auto t1 = std::chrono::steady_clock::now();
 #else
             auto t1 = std::chrono::monotonic_clock::now();
 #endif
-            SLAM.TrackMonocular(im_orig, tframe);
+            Sophus::SE3f TcwCur = SLAM.TrackMonocular(im_orig, tframe);
+            int state = SLAM.GetTrackingState();
+            if (state == 2)   // Tracking::OK
+            {
+                localized = true;
+                Tcw = TcwCur;   // keep last successful pose
+            }
 #ifdef COMPILEDWITHC11
             auto t2 = std::chrono::steady_clock::now();
 #else
@@ -116,18 +136,49 @@ int main(int argc, char **argv)
             double ttrack = std::chrono::duration_cast<
                 std::chrono::duration<double>>(t2 - t1).count();
 
-            // Pace playback so SLAM threads (local mapping, loop closing) keep up
             if (ttrack < fakeInterval)
                 usleep((unsigned int)((fakeInterval - ttrack) * 1e6));
         }
+
+        // Twc = inverse of Tcw  (camera position in world frame)
+        Sophus::SE3f Twc = Tcw.inverse();
+        // Extra pause after last repeat: let the reloc thread catch up
+        usleep(300000);  // 300ms
+
+        vResults.push_back({vTimestamps[ni], vFilenames[ni], Twc, localized});
+
+        if (localized)
+            cout << "  ✓ localized\n";
+        else
+            cout << "  ✗ not localized\n";
     }
 
-    SLAM.Shutdown();
+    // ── write LocalizedPoses.txt before Shutdown() to survive cleanup crash ──
+    // Format: timestamp image_path tx ty tz qx qy qz qw
+    {
+        ofstream f("LocalizedPoses.txt");
+        f << fixed << setprecision(9);
+        f << "# timestamp image_path tx ty tz qx qy qz qw\n";
+        int nOk = 0;
+        for (auto &r : vResults)
+        {
+            if (!r.ok) continue;
+            Eigen::Vector3f    t = r.Twc.translation();
+            Eigen::Quaternionf q = r.Twc.unit_quaternion();
+            f << r.ts << " " << r.path << " "
+              << t.x() << " " << t.y() << " " << t.z() << " "
+              << q.x() << " " << q.y() << " " << q.z() << " " << q.w()
+              << "\n";
+            nOk++;
+        }
+        cout << "\nLocalized " << nOk << "/" << nImages
+             << " images → LocalizedPoses.txt\n";
+    }
 
-    SLAM.SaveTrajectoryTUM("CameraTrajectory.txt");
     SLAM.SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");
+    cout << "Trajectory saved.\n";
 
-    cout << "\nTrajectory saved.\n";
+    SLAM.Shutdown();
     return 0;
 }
 
