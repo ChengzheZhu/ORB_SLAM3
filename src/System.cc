@@ -1563,5 +1563,10 @@ string System::CalculateCheckSum(string filename, int type)
     return checksum;
 }
 
+void System::SaveRelocLog(const string &filename)
+{
+    mpTracker->SaveRelocLog(filename);
+}
+
 } //namespace ORB_SLAM
 

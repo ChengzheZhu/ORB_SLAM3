@@ -164,6 +164,21 @@ public:
     void Reset(bool bLocMap = false);
     void ResetActiveMap(bool bLocMap = false);
 
+    // Relocalization candidate log — populated by Relocalization(), written by SaveRelocLog().
+    // One entry per Relocalization() call (i.e. per repeat of each query image).
+    struct RelocLogEntry {
+        double framets;          // mCurrentFrame.mTimeStamp
+        bool   success;
+        std::vector<std::pair<long unsigned int, double>> candidates; // (kf_id, kf_ts)
+        long unsigned int bestKfId;
+        double            bestKfTs;
+        int               bestInliers;   // best nGood seen, even if < threshold
+        bool              hasPose;       // true if bestInliers >= 10
+        Sophus::SE3f      bestTcw;       // camera-to-world of best candidate
+    };
+    std::vector<RelocLogEntry> mvRelocLog;
+    void SaveRelocLog(const std::string &filename) const;
+
     float mMeanTrack;
     bool mbInitWith3KFs;
     double t0; // time-stamp of first read frame

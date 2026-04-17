@@ -180,6 +180,7 @@ int main(int argc, char **argv)
     }
 
     SLAM.SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");
+    SLAM.SaveRelocLog("RelocLog.txt");
     cout << "Trajectory saved.\n";
 
     SLAM.Shutdown();

@@ -172,6 +172,10 @@ public:
     // See format details at: http://www.cvlibs.net/datasets/kitti/eval_odometry.php
     void SaveTrajectoryKITTI(const string &filename);
 
+    // Save per-frame relocalization candidate log (for manual matching fallback).
+    // Call after SLAM.Shutdown() or before it — safe either way.
+    void SaveRelocLog(const string &filename);
+
     // TODO: Save/Load functions
     // SaveMap(const string &filename);
     // LoadMap(const string &filename);

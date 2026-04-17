@@ -3629,10 +3629,27 @@ bool Tracking::Relocalization()
     vector<KeyFrame*> vpCandidateKFs = mpKeyFrameDB->DetectRelocalizationCandidates(&mCurrentFrame, pCurrentMap);
     cerr << "[reloc] candidates: " << vpCandidateKFs.size() << "\n";
 
+    // Collect all BoW candidate (id, ts) pairs for the reloc log
+    std::vector<std::pair<long unsigned int, double>> vCandInfo;
+    for (auto* pKF : vpCandidateKFs)
+        vCandInfo.emplace_back(pKF->mnId, pKF->mTimeStamp);
+
     if(vpCandidateKFs.empty()) {
+        RelocLogEntry entry;
+        entry.framets = mCurrentFrame.mTimeStamp;
+        entry.success = false;
+        entry.candidates = vCandInfo;
+        entry.bestKfId = 0; entry.bestKfTs = 0;
+        entry.bestInliers = 0; entry.hasPose = false;
+        mvRelocLog.push_back(entry);
         Verbose::PrintMess("There are not candidates", Verbose::VERBOSITY_NORMAL);
         return false;
     }
+
+    // Track best PnP result seen across all candidates & iterations (even if below threshold)
+    int    bestNGood  = 0;
+    int    bestKFIdx  = -1;
+    Sophus::SE3f bestTcwLog;
 
     const int nKFs = vpCandidateKFs.size();
 
@@ -3766,6 +3783,13 @@ bool Tracking::Relocalization()
                 }
 
 
+                // Track best result for the reloc log (even if below threshold)
+                if(nGood > bestNGood) {
+                    bestNGood = nGood;
+                    bestKFIdx = i;
+                    bestTcwLog = mCurrentFrame.GetPose();
+                }
+
                 // If the pose is supported by enough inliers stop ransacs and continue
                 if(nGood>=20)
                 {
@@ -3774,6 +3798,25 @@ bool Tracking::Relocalization()
                 }
             }
         }
+    }
+
+    // Write reloc log entry for this frame
+    {
+        RelocLogEntry entry;
+        entry.framets     = mCurrentFrame.mTimeStamp;
+        entry.success     = bMatch;
+        entry.candidates  = vCandInfo;
+        entry.bestInliers = bestNGood;
+        entry.hasPose     = (bestNGood >= 10);
+        entry.bestTcw     = bestTcwLog;
+        if (bestKFIdx >= 0 && bestKFIdx < (int)vpCandidateKFs.size()) {
+            entry.bestKfId = vpCandidateKFs[bestKFIdx]->mnId;
+            entry.bestKfTs = vpCandidateKFs[bestKFIdx]->mTimeStamp;
+        } else {
+            entry.bestKfId = 0;
+            entry.bestKfTs = 0.0;
+        }
+        mvRelocLog.push_back(entry);
     }
 
     if(!bMatch)
@@ -3787,6 +3830,38 @@ bool Tracking::Relocalization()
         return true;
     }
 
+}
+
+void Tracking::SaveRelocLog(const std::string &filename) const
+{
+    ofstream f(filename);
+    if (!f.is_open()) {
+        cerr << "ERROR: cannot write RelocLog to " << filename << "\n";
+        return;
+    }
+    f << fixed << setprecision(9);
+    f << "# frame_ts success best_kf_id best_kf_ts best_inliers tx ty tz qx qy qz qw | kf_id:kf_ts ...\n";
+    for (const auto& e : mvRelocLog) {
+        // Best candidate pose in camera-to-world (Twc = Tcw.inverse())
+        Sophus::SE3f Twc = e.bestTcw.inverse();
+        Eigen::Vector3f    t = Twc.translation();
+        Eigen::Quaternionf q = Twc.unit_quaternion();
+        f << e.framets
+          << " " << (int)e.success
+          << " " << e.bestKfId
+          << " " << e.bestKfTs
+          << " " << e.bestInliers;
+        if (e.hasPose)
+            f << " " << t.x() << " " << t.y() << " " << t.z()
+              << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w();
+        else
+            f << " 0 0 0 0 0 0 1";
+        f << " |";
+        for (const auto& c : e.candidates)
+            f << " " << c.first << ":" << c.second;
+        f << "\n";
+    }
+    cout << "RelocLog saved: " << mvRelocLog.size() << " entries → " << filename << "\n";
 }
 
 void Tracking::Reset(bool bLocMap)
