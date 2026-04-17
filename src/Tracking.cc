@@ -3035,9 +3035,11 @@ bool Tracking::TrackLocalMap()
     }
 
     // Decide if the tracking was succesful
-    // More restrictive if there was a relocalization recently
+    // More restrictive if there was a relocalization recently — but only
+    // during mapping mode.  In localization-only mode the map is read-only
+    // so the strict 50-inlier guard is irrelevant and blocks cross-camera reloc.
     mpLocalMapper->mnMatchesInliers=mnMatchesInliers;
-    if(mCurrentFrame.mnId<mnLastRelocFrameId+mMaxFrames && mnMatchesInliers<50)
+    if(!mbOnlyTracking && mCurrentFrame.mnId<mnLastRelocFrameId+mMaxFrames && mnMatchesInliers<50)
         return false;
 
     if((mnMatchesInliers>10)&&(mState==RECENTLY_LOST))
@@ -3813,8 +3815,10 @@ bool Tracking::Relocalization()
             entry.bestKfId = vpCandidateKFs[bestKFIdx]->mnId;
             entry.bestKfTs = vpCandidateKFs[bestKFIdx]->mTimeStamp;
         } else {
-            entry.bestKfId = 0;
-            entry.bestKfTs = 0.0;
+            // No candidate survived PnP — use ULONG_MAX as sentinel
+            // (distinguishable from real KF ids which start at 0)
+            entry.bestKfId = ULONG_MAX;
+            entry.bestKfTs = -1.0;
         }
         mvRelocLog.push_back(entry);
     }
