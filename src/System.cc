@@ -1503,9 +1503,8 @@ bool System::LoadAtlas(int type)
     string strFileVoc, strVocChecksum;
     bool isRead = false;
 
-    string pathLoadFileName = "./";
-    pathLoadFileName = pathLoadFileName.append(mStrLoadAtlasFromFile);
-    pathLoadFileName = pathLoadFileName.append(".osa");
+    // Same as SaveAtlas: a "./" prefix broke absolute paths ("./" + "/abs/...").
+    string pathLoadFileName = mStrLoadAtlasFromFile + ".osa";
 
     if(type == TEXT_FILE) // File text
     {
