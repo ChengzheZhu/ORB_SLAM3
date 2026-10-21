@@ -660,11 +660,15 @@ void System::SaveTrajectoryTUM(const string &filename)
         Sophus::SE3f Trw;
 
         // If the reference keyframe was culled, traverse the spanning tree to get a suitable keyframe.
-        while(pKF->isBad())
+        // After a tracking loss / map reset the chain can end in a null parent
+        // (dereferencing it segfaulted here); skip such frames, as SaveTrajectoryEuRoC does.
+        while(pKF && pKF->isBad())
         {
             Trw = Trw * pKF->mTcp;
             pKF = pKF->GetParent();
         }
+        if(!pKF)
+            continue;
 
         Trw = Trw * pKF->GetPose() * Two;
 
