@@ -82,6 +82,11 @@ public:
 
     bool isFinished();
 
+    int KeyframesInQueue(){
+        unique_lock<std::mutex> lock(mMutexLoopQueue);
+        return mlpLoopKeyFrameQueue.size();
+    }
+
     Viewer* mpViewer;
 
 #ifdef REGISTER_TIMES

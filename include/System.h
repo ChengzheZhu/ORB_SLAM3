@@ -259,6 +259,10 @@ private:
     string mStrLoadAtlasFromFile;
     string mStrSaveAtlasToFile;
 
+    // System.ShutdownWaitSeconds: how long Shutdown() waits for local mapping,
+    // loop closing and global BA to finish before saving. <= 0 = don't wait.
+    double mShutdownWaitSec;
+
     string mStrVocabularyFilePath;
 
     Settings* settings_;

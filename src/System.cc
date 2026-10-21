@@ -21,6 +21,7 @@
 #include "System.h"
 #include "Converter.h"
 #include <thread>
+#include <chrono>
 #include <pangolin/pangolin.h>
 #include <iomanip>
 #include <openssl/md5.h>
@@ -97,6 +98,11 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
             mStrSaveAtlasToFile = (string)node;
         }
     }
+
+    mShutdownWaitSec = 0.0;
+    node = fsSettings["System.ShutdownWaitSeconds"];
+    if(!node.empty() && (node.isReal() || node.isInt()))
+        mShutdownWaitSec = (double)node;
 
     node = fsSettings["loopClosing"];
     bool activeLC = true;
@@ -521,8 +527,56 @@ void System::Shutdown()
 
     cout << "Shutdown" << endl;
 
-    mpLocalMapper->RequestFinish();
-    mpLoopCloser->RequestFinish();
+    // Let the mapping threads drain before saving: without this the atlas is
+    // written while local mapping / loop closing / global BA are still running,
+    // and a GBA started near the end of the sequence is lost.
+    if(mShutdownWaitSec > 0)
+    {
+        const auto tStart = std::chrono::steady_clock::now();
+        const auto deadline = tStart + std::chrono::duration<double>(mShutdownWaitSec);
+        auto timeLeft = [&]{ return std::chrono::steady_clock::now() < deadline; };
+
+        // 1. Local mapping has no queued KFs and is idle; loop queue is empty.
+        //    In localization mode local mapping is stopped for good and never
+        //    drains its queue (RGB-D init still queues a KF), so skip it there.
+        //    Not "stopped = idle" in SLAM mode: loop correction stops it briefly.
+        const bool bOnlyTracking = mpTracker->mbOnlyTracking;
+        while(timeLeft() &&
+              !((bOnlyTracking ||
+                 (mpLocalMapper->KeyframesInQueue() == 0 && mpLocalMapper->AcceptKeyFrames())) &&
+                mpLoopCloser->KeyframesInQueue() == 0))
+            usleep(5000);
+
+        // 2. Finish both threads; loop closing completes the KF it is on
+        //    (which may start a GBA).
+        mpLocalMapper->RequestFinish();
+        mpLoopCloser->RequestFinish();
+        while(timeLeft() && !(mpLocalMapper->isFinished() && mpLoopCloser->isFinished()))
+            usleep(5000);
+
+        // 3. Global BA runs in its own thread; its map update only needs local
+        //    mapping stopped or finished, so this cannot deadlock.
+        if(mpLoopCloser->isRunningGBA())
+            cout << "Shutdown: waiting for global BA to finish ..." << endl;
+        while(timeLeft() && mpLoopCloser->isRunningGBA())
+            usleep(5000);
+
+        const double waited = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - tStart).count();
+        if(timeLeft())
+            cout << "Shutdown: mapping threads finished after " << waited << " s" << endl;
+        else
+            cerr << "WARNING: Shutdown wait of " << mShutdownWaitSec << " s expired "
+                 << "(local mapping finished=" << mpLocalMapper->isFinished()
+                 << ", loop closing finished=" << mpLoopCloser->isFinished()
+                 << ", GBA running=" << mpLoopCloser->isRunningGBA()
+                 << ") — atlas saved before mapping completed" << endl;
+    }
+    else
+    {
+        mpLocalMapper->RequestFinish();
+        mpLoopCloser->RequestFinish();
+    }
     /*if(mpViewer)
     {
         mpViewer->RequestFinish();
